@@ -1,0 +1,6 @@
+flask
+requests
+pandas
+schedule
+gunicorn
+git+https://github.com/joshyattridge/smart-money-concepts.git
