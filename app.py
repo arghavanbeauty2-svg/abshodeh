@@ -20,42 +20,39 @@ TELEGRAM_TOKEN = "8296855766:AAEAOO_NA2Q0GROFMKACAVV2ZnkxvDBroWM"
 price_history = []
 last_update_id = 0
 active_chats = set()
-polling_lock = threading.Lock()  # فقط یک polling
+polling_running = False  # فقط یک polling
 
-# --- حذف webhook + قطع تمام pollingهای قبلی ---
-logger.info("حذف webhook و قطع pollingهای قبلی...")
+# --- حذف webhook + drop pending ---
+logger.info("حذف webhook و آپدیت‌های قدیمی...")
 try:
     delete_resp = requests.get(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook",
-        params={'drop_pending_updates': True},  # مهم: تمام آپدیت‌های در صف را دور می‌ریزد
+        params={'drop_pending_updates': True},
         timeout=10
     ).json()
     if delete_resp.get('ok'):
         logger.info("Webhook و آپدیت‌های در صف حذف شدند")
-    else:
-        logger.warning(f"حذف webhook شکست: {delete_resp}")
 except Exception as e:
     logger.error(f"خطا در حذف webhook: {e}")
 
-# --- تأیید وضعیت ---
+# --- دریافت آخرین update_id (skip old) ---
 try:
-    info = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getWebhookInfo", timeout=10).json()
-    if info.get('ok'):
-        url = info['result'].get('url', 'None')
-        pending = info['result'].get('pending_update_count', 0)
-        logger.info(f"وضعیت webhook: {url} | آپدیت‌های در صف: {pending}")
-    else:
-        logger.warning(f"getWebhookInfo خطا: {info}")
+    resp = requests.get(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+        params={'limit': 1, 'timeout': 0},
+        timeout=10
+    ).json()
+    if resp.get('ok') and resp.get('result'):
+        last_update_id = resp['result'][-1]['update_id']
+        logger.info(f"آخرین update_id تنظیم شد: {last_update_id}")
 except Exception as e:
-    logger.error(f"خطا در getWebhookInfo: {e}")
+    logger.warning(f"دریافت آخرین update_id شکست: {e}")
 
 # --- تست ربات ---
 try:
     resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=10).json()
     if resp.get('ok'):
         logger.info(f"ربات فعال: @{resp['result']['username']}")
-    else:
-        logger.error(f"getMe خطا: {resp}")
 except Exception as e:
     logger.error(f"تست API شکست: {e}")
 
@@ -122,53 +119,52 @@ def send_telegram(chat_id, text):
     except Exception as e:
         logger.error(f"ارسال پیام شکست: {e}")
 
-# --- polling با lock ---
+# --- polling با flag ---
 def telegram_polling():
-    if not polling_lock.acquire(blocking=False):
-        logger.warning("Polling قبلاً در حال اجراست — اجرا نمی‌شود")
+    global polling_running, last_update_id
+    if polling_running:
+        logger.warning("Polling قبلاً فعال است — اجرا نمی‌شود")
         return
-    try:
-        global last_update_id
-        logger.info("Polling تلگرام شروع شد (تنها یک نمونه)")
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-        while True:
-            try:
-                params = {
-                    'offset': last_update_id + 1,
-                    'timeout': 30,
-                    'allowed_updates': json.dumps(['message', 'callback_query'])
-                }
-                response = requests.get(url, params=params, timeout=35).json()
-                if not response.get('ok'):
-                    logger.warning(f"getUpdates خطا: {response}")
-                    time.sleep(10)
-                    continue
-                for update in response.get('result', []):
-                    last_update_id = update['update_id']
-                    logger.info(f"آپدیت {last_update_id} دریافت شد")
-                    
-                    if 'message' in update:
-                        msg = update['message']
-                        chat_id = msg['chat']['id']
-                        text = msg.get('text', '').strip()
-                        active_chats.add(chat_id)
-                        if text == '/start':
-                            send_telegram(chat_id, "✅ ربات فعال شد!")
-                            send_price_with_button(chat_id)
-                    
-                    elif 'callback_query' in update:
-                        cb = update['callback_query']
-                        chat_id = cb['message']['chat']['id']
-                        message_id = cb['message']['message_id']
-                        if cb['data'] == 'get_price':
-                            edit_price_message(chat_id, message_id)
-                            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
-                                          data={'callback_query_id': cb['id']})
-            except Exception as e:
-                logger.error(f"Polling کرش: {e}")
+    polling_running = True
+    logger.info("Polling تلگرام شروع شد (تنها یک نمونه)")
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    while polling_running:
+        try:
+            params = {
+                'offset': last_update_id + 1,
+                'timeout': 30,
+                'allowed_updates': json.dumps(['message', 'callback_query'])
+            }
+            response = requests.get(url, params=params, timeout=35).json()
+            if not response.get('ok'):
+                logger.warning(f"getUpdates خطا: {response}")
                 time.sleep(10)
-    finally:
-        polling_lock.release()
+                continue
+            for update in response.get('result', []):
+                last_update_id = update['update_id']
+                logger.info(f"آپدیت {last_update_id} دریافت شد")
+                
+                if 'message' in update:
+                    msg = update['message']
+                    chat_id = msg['chat']['id']
+                    text = msg.get('text', '').strip()
+                    active_chats.add(chat_id)
+                    if text == '/start':
+                        send_telegram(chat_id, "✅ ربات فعال شد!")
+                        send_price_with_button(chat_id)
+                
+                elif 'callback_query' in update:
+                    cb = update['callback_query']
+                    chat_id = cb['message']['chat']['id']
+                    message_id = cb['message']['message_id']
+                    if cb['data'] == 'get_price':
+                        edit_price_message(chat_id, message_id)
+                        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+                                      data={'callback_query_id': cb['id']})
+        except Exception as e:
+            logger.error(f"Polling کرش: {e}")
+            time.sleep(10)
+    logger.info("Polling متوقف شد")
 
 # --- scheduler ---
 def scheduler_thread():
