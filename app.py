@@ -6,10 +6,9 @@ import schedule
 import time
 import threading
 import logging
-from datetime import datetime
 import json
 
-# تنظیم لاگ‌گیری (به کنسول Render)
+# تنظیم لاگ‌گیری (به stdout Render)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -22,16 +21,16 @@ price_history = []
 last_update_id = 0
 active_chats = set()
 
-# --- تست API تلگرام در استارت ---
-def test_telegram_api():
-    try:
-        resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=10).json()
-        if resp.get('ok'):
-            logger.info(f"ربات تلگرام فعال: @{resp['result']['username']}")
-        else:
-            logger.error(f"خطا در getMe: {resp}")
-    except Exception as e:
-        logger.error(f"خطا در تست API تلگرام: {e}")
+# --- تست API تلگرام (در ماژول level) ---
+logger.info("ماژول app.py لود شد — تست API تلگرام...")
+try:
+    resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=10).json()
+    if resp.get('ok'):
+        logger.info(f"ربات فعال: @{resp['result']['username']}")
+    else:
+        logger.error(f"getMe خطا: {resp}")
+except Exception as e:
+    logger.error(f"تست API تلگرام شکست: {e}")
 
 # --- دریافت قیمت ---
 def fetch_gold_price():
@@ -96,7 +95,7 @@ def send_telegram(chat_id, text):
     except Exception as e:
         logger.error(f"ارسال پیام شکست: {e}")
 
-# --- polling با try/except قوی ---
+# --- polling ---
 def telegram_polling():
     global last_update_id
     logger.info("Polling تلگرام شروع شد")
@@ -131,38 +130,25 @@ def telegram_polling():
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
                                       data={'callback_query_id': cb['id']})
         except Exception as e:
-            logger.error(f"Polling کرش کرد: {e}")
+            logger.error(f"Polling کرش: {e}")
             time.sleep(10)
-
-# --- تحلیل سیگنال (ساده‌شده برای تست) ---
-def analyze_and_signal():
-    if not active_chats:
-        return
-    price = fetch_gold_price()
-    if price:
-        for chat_id in active_chats:
-            send_telegram(chat_id, f"تست سیگنال: قیمت فعلی {price:,.0f}")
 
 # --- scheduler ---
 def scheduler_thread():
-    schedule.every(2).minutes.do(analyze_and_signal)
+    schedule.every(2).minutes.do(lambda: logger.info("Scheduler تیک ۲ دقیقه"))
     logger.info("Scheduler شروع شد")
     while True:
         schedule.run_pending()
         time.sleep(1)
+
+# --- استارت threadها در ماژول level ---
+logger.info("استارت threadهای polling و scheduler...")
+threading.Thread(target=telegram_polling, daemon=True).start()
+threading.Thread(target=scheduler_thread, daemon=True).start()
 
 # --- صفحه اصلی ---
 @app.route('/')
 def home():
     return "ربات فعال! لاگ‌ها را چک کنید."
 
-# --- اجرا با try/except ---
-if __name__ == '__main__':
-    try:
-        test_telegram_api()
-        threading.Thread(target=scheduler_thread, daemon=True).start()
-        threading.Thread(target=telegram_polling, daemon=True).start()
-        logger.info("Threadها استارت شدند")
-        app.run(host='0.0.0.0', port=5000)
-    except Exception as e:
-        logger.critical(f"خطای استارت: {e}")
+# --- حذف app.run() — Gunicorn خودش اجرا می‌کند ---
