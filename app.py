@@ -9,58 +9,57 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = "8296855766:AAEAOO_NA2Q0GROFMKACAVV2ZnkxvDBroWM"
-WEBHOOK_URL = "https://abshodeh.onrender.com/webhook"  # Render URL شما
+WEBHOOK_URL = "https://abshodeh.onrender.com/webhook"
+API_URL = "https://brsapi.ir/Api/Market/Gold_Currency.php?key=BFnYYJjKvtuvPhtIZ2WfyFNhE54TG6ly"
 keyboard = {"inline_keyboard": [[{"text": "🔄 استعلام مجدد", "callback_data": "get_price"}]]}
+webhook_set = False
 
-# --- Nobitex API (بدون پروکسی، با DNS عمومی) ---
+# --- دریافت قیمت از brsapi.ir ---
 def fetch_gold_price():
     try:
-        # استفاده از DNS عمومی Google برای resolve .ir
-        resp = requests.get("https://8.8.8.8/resolve?name=api.nobitex.ir", timeout=5).json()
-        if 'Answer' in resp:
-            ip = resp['Answer'][0]['data']
-            url = f"https://{ip}/v2/orderbook/XAUTUSDT"
-            resp = requests.get(url, timeout=10).json()
-            if resp.get('status') == 'ok':
-                bids = float(resp['bids'][0][0]) if resp['bids'] else 0
-                asks = float(resp['asks'][0][0]) if resp['asks'] else 0
-                price_tether = (bids + asks) / 2
-                price_gram = price_tether * 600000 / 31.1035
-                price_irr = int(price_gram * 4.608)
-                logger.info(f"Nobitex قیمت: {price_irr:,} تومان")
-                return price_irr
-    except Exception as e:
-        logger.error(f"Nobitex خطا: {e}")
-    # Fallback به brsapi.ir با IP مستقیم (از DNS عمومی)
-    try:
-        brs_ip = requests.get("https://8.8.8.8/resolve?name=brsapi.ir", timeout=5).json()['Answer'][0]['data']
-        url = f"https://{brs_ip}/Api/Market/Gold_Currency.php?key=BFnYYJjKvtuvPhtIZ2WfyFNhE54TG6ly"
-        resp = requests.get(url, timeout=10).json()
+        resp = requests.get(API_URL, timeout=15).json()
         for item in resp.get('gold', []):
             if item.get('symbol') == 'IR_GOLD_MELTED':
                 price = int(item['price'])
-                logger.info(f"brsapi.ir قیمت: {price:,} تومان")
-                return price
+                change = item.get('change_value', 0)
+                percent = item.get('change_percent', 0)
+                logger.info(f"قیمت طلای آب‌شده: {price:,} تومان ({'+' if change > 0 else ''}{change:,} / {percent:+.2f}%)")
+                return price, change, percent
     except Exception as e:
-        logger.error(f"brsapi.ir خطا: {e}")
-    return 45545000
+        logger.error(f"خطا در API: {e}")
+    return 45555000, 0, 0  # fallback
 
-# --- ارسال قیمت ---
+# --- ارسال پیام با قیمت ---
 def send_price(chat_id):
-    price = fetch_gold_price()
-    message = f"💰 **قیمت طلای آب‌شده**\n`{price:,} تومان`\n\nکلیک برای بروزرسانی 👇"
+    price, change, percent = fetch_gold_price()
+    message = (
+        f"💰 **قیمت طلای آب‌شده**\n"
+        f"`{price:,} تومان`\n\n"
+        f"{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({percent:+.2f}%)\n\n"
+        f"کلیک برای بروزرسانی 👇"
+    )
     payload = {
         'chat_id': chat_id,
         'text': message,
         'parse_mode': 'Markdown',
         'reply_markup': json.dumps(keyboard)
     }
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=payload, timeout=10)
+    try:
+        resp = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data=payload, timeout=10).json()
+        if resp.get('ok'):
+            logger.info(f"پیام ارسال شد به {chat_id}")
+    except Exception as e:
+        logger.error(f"ارسال شکست: {e}")
 
-# --- ویرایش ---
+# --- ویرایش پیام ---
 def edit_price(chat_id, message_id):
-    price = fetch_gold_price()
-    new_text = f"💰 **قیمت طلای آب‌شده**\n`{price:,} تومان`\n\nکلیک برای بروزرسانی 👇"
+    price, change, percent = fetch_gold_price()
+    new_text = (
+        f"💰 **قیمت طلای آب‌شده**\n"
+        f"`{price:,} تومان`\n\n"
+        f"{'📈' if change > 0 else '📉'} تغییر: `{change:+,} تومان` ({percent:+.2f}%)\n\n"
+        f"کلیک برای بروزرسانی 👇"
+    )
     payload = {
         'chat_id': chat_id,
         'message_id': message_id,
@@ -68,11 +67,15 @@ def edit_price(chat_id, message_id):
         'parse_mode': 'Markdown',
         'reply_markup': json.dumps(keyboard)
     }
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText", data=payload, timeout=10)
+    try:
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText", data=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"ویرایش شکست: {e}")
 
-# --- Webhook handler ---
+# --- Webhook تلگرام ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    global webhook_set
     if request.headers.get('content-type') == 'application/json':
         update = request.get_json()
         if 'message' in update:
@@ -92,16 +95,26 @@ def webhook():
         return '', 200
     abort(403)
 
-# --- setWebhook در استارت ---
-@app.before_first_request
+# --- تنظیم Webhook فقط یکبار ---
+@app.before_request
 def setup_webhook():
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    payload = {'url': WEBHOOK_URL}
-    requests.post(url, data=payload)
+    global webhook_set
+    if not webhook_set:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+            payload = {'url': WEBHOOK_URL}
+            resp = requests.post(url, data=payload, timeout=10).json()
+            if resp.get('ok'):
+                logger.info("✅ Webhook تنظیم شد")
+            else:
+                logger.error(f"Webhook شکست: {resp}")
+            webhook_set = True
+        except Exception as e:
+            logger.error(f"تنظیم Webhook شکست: {e}")
 
 @app.route('/')
 def home():
-    return "ربات فعال با Webhook!"
+    return "ربات طلای آب‌شده فعال است! /start بزنید."
 
 if __name__ == '__main__':
     app.run()
