@@ -8,7 +8,7 @@ import threading
 import logging
 import json
 
-# تنظیم لاگ‌گیری (به stdout Render)
+# تنظیم لاگ‌گیری
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -21,8 +21,29 @@ price_history = []
 last_update_id = 0
 active_chats = set()
 
-# --- تست API تلگرام (در ماژول level) ---
-logger.info("ماژول app.py لود شد — تست API تلگرام...")
+# --- حذف webhook در استارت ---
+logger.info("حذف webhook قبلی...")
+try:
+    delete_resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook", timeout=10).json()
+    if delete_resp.get('ok'):
+        logger.info("Webhook با موفقیت حذف شد")
+    else:
+        logger.warning(f"حذف webhook شکست: {delete_resp}")
+except Exception as e:
+    logger.error(f"خطا در حذف webhook: {e}")
+
+# --- تأیید وضعیت webhook ---
+try:
+    info = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getWebhookInfo", timeout=10).json()
+    if info.get('ok'):
+        url = info['result'].get('url', 'None')
+        logger.info(f"وضعیت webhook: {url}")
+    else:
+        logger.warning(f"getWebhookInfo خطا: {info}")
+except Exception as e:
+    logger.error(f"خطا در getWebhookInfo: {e}")
+
+# --- تست API تلگرام ---
 try:
     resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=10).json()
     if resp.get('ok'):
@@ -141,7 +162,7 @@ def scheduler_thread():
         schedule.run_pending()
         time.sleep(1)
 
-# --- استارت threadها در ماژول level ---
+# --- استارت threadها ---
 logger.info("استارت threadهای polling و scheduler...")
 threading.Thread(target=telegram_polling, daemon=True).start()
 threading.Thread(target=scheduler_thread, daemon=True).start()
@@ -151,4 +172,4 @@ threading.Thread(target=scheduler_thread, daemon=True).start()
 def home():
     return "ربات فعال! لاگ‌ها را چک کنید."
 
-# --- حذف app.run() — Gunicorn خودش اجرا می‌کند ---
+# --- بدون app.run() ---
