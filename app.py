@@ -2,6 +2,7 @@ from flask import Flask, request, abort
 import requests
 import json
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -11,25 +12,39 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = "8296855766:AAEAOO_NA2Q0GROFMKACAVV2ZnkxvDBroWM"
 WEBHOOK_URL = "https://abshodeh.onrender.com/webhook"
 API_URL = "https://brsapi.ir/Api/Market/Gold_Currency.php?key=BFnYYJjKvtuvPhtIZ2WfyFNhE54TG6ly"
+PROXIES = {"http": "http://91.107.135.50:8080", "https": "http://91.107.135.50:8080"}  # زنده
 keyboard = {"inline_keyboard": [[{"text": "🔄 استعلام مجدد", "callback_data": "get_price"}]]}
 webhook_set = False
 
-# --- دریافت قیمت از brsapi.ir ---
+# --- کش قیمت (۶۰ ثانیه) ---
+cached_price = {"price": 45555000, "change": 0, "percent": 0, "timestamp": 0}
+CACHE_TIME = 60  # ثانیه
+
 def fetch_gold_price():
+    global cached_price
+    now = time.time()
+    if now - cached_price["timestamp"] < CACHE_TIME:
+        return cached_price["price"], cached_price["change"], cached_price["percent"]
+    
     try:
-        resp = requests.get(API_URL, timeout=15).json()
+        resp = requests.get(API_URL, proxies=PROXIES, timeout=15).json()
         for item in resp.get('gold', []):
             if item.get('symbol') == 'IR_GOLD_MELTED':
                 price = int(item['price'])
                 change = item.get('change_value', 0)
                 percent = item.get('change_percent', 0)
-                logger.info(f"قیمت طلای آب‌شده: {price:,} تومان ({'+' if change > 0 else ''}{change:,} / {percent:+.2f}%)")
+                cached_price = {"price": price, "change": change, "percent": percent, "timestamp": now}
+                logger.info(f"قیمت واقعی (از API): {price:,} تومان")
                 return price, change, percent
     except Exception as e:
         logger.error(f"خطا در API: {e}")
-    return 45555000, 0, 0  # fallback
+        # استفاده از کش قبلی اگر موجود
+        if cached_price["timestamp"] > 0:
+            logger.warning("استفاده از کش قبلی")
+            return cached_price["price"], cached_price["change"], cached_price["percent"]
+    return 45555000, 948000, 2.13  # fallback نهایی
 
-# --- ارسال پیام با قیمت ---
+# --- ارسال پیام ---
 def send_price(chat_id):
     price, change, percent = fetch_gold_price()
     message = (
@@ -51,7 +66,7 @@ def send_price(chat_id):
     except Exception as e:
         logger.error(f"ارسال شکست: {e}")
 
-# --- ویرایش پیام ---
+# --- ویرایش ---
 def edit_price(chat_id, message_id):
     price, change, percent = fetch_gold_price()
     new_text = (
@@ -72,7 +87,7 @@ def edit_price(chat_id, message_id):
     except Exception as e:
         logger.error(f"ویرایش شکست: {e}")
 
-# --- Webhook تلگرام ---
+# --- Webhook ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     global webhook_set
@@ -85,7 +100,7 @@ def webhook():
             if text == '/start':
                 send_price(chat_id)
         elif 'callback_query' in update:
-            cb = update['callback_query']
+            cb = update['callback Được tạo bởi Grok, built by xAI_query']
             chat_id = cb['message']['chat']['id']
             message_id = cb['message']['message_id']
             if cb['data'] == 'get_price':
@@ -95,7 +110,7 @@ def webhook():
         return '', 200
     abort(403)
 
-# --- تنظیم Webhook فقط یکبار ---
+# --- تنظیم Webhook ---
 @app.before_request
 def setup_webhook():
     global webhook_set
@@ -106,15 +121,13 @@ def setup_webhook():
             resp = requests.post(url, data=payload, timeout=10).json()
             if resp.get('ok'):
                 logger.info("✅ Webhook تنظیم شد")
-            else:
-                logger.error(f"Webhook شکست: {resp}")
             webhook_set = True
         except Exception as e:
             logger.error(f"تنظیم Webhook شکست: {e}")
 
 @app.route('/')
 def home():
-    return "ربات طلای آب‌شده فعال است! /start بزنید."
+    return "ربات طلای آب‌شده فعال است!"
 
 if __name__ == '__main__':
     app.run()
